@@ -1,0 +1,209 @@
+-- | Spraay Protocol — Batch Payment Orchestration for Canton Network
+--
+-- This module defines the on-ledger contracts for coordinating batch
+-- payments through the Canton Token Standard. The actual token transfers
+-- are executed via TransferFactory choices on the Token Standard; these
+-- contracts handle authorization, tracking, and reward-activity marking.
+--
+-- Architecture:
+--   1. Sender creates a BatchPaymentRequest with N recipients
+--   2. Spraay operator (app provider party) exercises Execute
+--   3. Backend constructs optimal TransferFactory_Transfer commands
+--   4. BatchPaymentReceipt is created on completion
+--   5. FeaturedAppActivityMarker is written for CC rewards
+
+module Spraay.BatchPayment where
+
+import DA.List (length)
+import DA.Time (RelTime)
+
+-- | A single payment within a batch
+data PaymentItem = PaymentItem
+  with
+    recipient : Party
+    amount    : Decimal
+    memo      : Optional Text
+  deriving (Eq, Show)
+
+-- | Batch payment status
+data BatchStatus
+  = Pending
+  | Executing
+  | Completed
+  | Failed
+  | Cancelled
+  deriving (Eq, Show)
+
+-- | Configuration for the Spraay batch payment service
+template SpraayServiceConfig
+  with
+    operator    : Party       -- ^ Spraay app provider party
+    feeRate     : Decimal     -- ^ Fee percentage (e.g. 0.003 = 0.3%)
+    maxBatchSize : Int        -- ^ Maximum recipients per batch
+    maxUtxoTarget : Int       -- ^ Target max UTXOs per user (Canton recommends ~10)
+  where
+    signatory operator
+    key operator : Party
+    maintainer key
+
+    choice UpdateFeeRate : ContractId SpraayServiceConfig
+      with newRate : Decimal
+      controller operator
+      do create this with feeRate = newRate
+
+    choice UpdateMaxBatch : ContractId SpraayServiceConfig
+      with newMax : Int
+      controller operator
+      do create this with maxBatchSize = newMax
+
+-- | A request to execute a batch of payments
+--
+-- The sender creates this contract. The Spraay operator then exercises
+-- the Execute choice, which triggers the backend to construct and submit
+-- the optimal set of TransferFactory_Transfer commands against the
+-- Canton Token Standard.
+template BatchPaymentRequest
+  with
+    sender      : Party           -- ^ Party funding the batch
+    operator    : Party           -- ^ Spraay app provider party
+    payments    : [PaymentItem]   -- ^ List of recipients and amounts
+    instrument  : Text            -- ^ Token instrument identifier (e.g. "CantonCoin", "USDCx")
+    batchId     : Text            -- ^ Unique batch identifier from Spraay gateway
+    createdAt   : Time            -- ^ Submission timestamp
+  where
+    ensure length payments > 0
+    signatory sender
+    observer operator
+
+    -- | Operator accepts and begins execution
+    choice Execute : ContractId BatchPaymentExecution
+      controller operator
+      do
+        now <- getTime
+        create BatchPaymentExecution with
+          sender
+          operator
+          payments
+          instrument
+          batchId
+          status = Executing
+          startedAt = now
+          completedTransfers = 0
+          failedTransfers = 0
+
+    -- | Sender cancels before execution
+    choice Cancel : ContractId BatchPaymentReceipt
+      controller sender
+      do
+        now <- getTime
+        create BatchPaymentReceipt with
+          sender
+          operator
+          batchId
+          instrument
+          totalRecipients = length payments
+          completedTransfers = 0
+          failedTransfers = 0
+          status = Cancelled
+          totalAmount = 0.0
+          feeCharged = 0.0
+          completedAt = now
+
+-- | Active execution state — consumed when batch completes or fails
+template BatchPaymentExecution
+  with
+    sender            : Party
+    operator          : Party
+    payments          : [PaymentItem]
+    instrument        : Text
+    batchId           : Text
+    status            : BatchStatus
+    startedAt         : Time
+    completedTransfers : Int
+    failedTransfers    : Int
+  where
+    signatory sender, operator
+
+    -- | Called by the backend after all transfers are submitted
+    choice MarkCompleted : ContractId BatchPaymentReceipt
+      with
+        completed : Int
+        failed    : Int
+        totalAmt  : Decimal
+        fee       : Decimal
+      controller operator
+      do
+        now <- getTime
+        create BatchPaymentReceipt with
+          sender
+          operator
+          batchId
+          instrument
+          totalRecipients = length payments
+          completedTransfers = completed
+          failedTransfers = failed
+          status = if failed == 0 then Completed else Failed
+          totalAmount = totalAmt
+          feeCharged = fee
+          completedAt = now
+
+    -- | Operator marks batch as failed (e.g. insufficient holdings)
+    choice MarkFailed : ContractId BatchPaymentReceipt
+      with reason : Text
+      controller operator
+      do
+        now <- getTime
+        create BatchPaymentReceipt with
+          sender
+          operator
+          batchId
+          instrument
+          totalRecipients = length payments
+          completedTransfers
+          failedTransfers = length payments - completedTransfers
+          status = Failed
+          totalAmount = 0.0
+          feeCharged = 0.0
+          completedAt = now
+
+-- | Immutable receipt — queryable via PQS for transaction history
+template BatchPaymentReceipt
+  with
+    sender            : Party
+    operator          : Party
+    batchId           : Text
+    instrument        : Text
+    totalRecipients   : Int
+    completedTransfers : Int
+    failedTransfers   : Int
+    status            : BatchStatus
+    totalAmount       : Decimal
+    feeCharged        : Decimal
+    completedAt       : Time
+  where
+    signatory operator, sender
+
+    -- Non-consuming choice for PQS event tracking
+    nonconsuming choice QueryReceipt : BatchPaymentReceipt
+      controller operator
+      do pure this
+
+-- | Activity marker for Canton Network app rewards (CC minting)
+--
+-- Created by the backend after each successful batch execution.
+-- SV automation detects these and converts them to AppRewardCoupons.
+template SpraayActivityMarker
+  with
+    operator    : Party     -- ^ Spraay app provider party
+    batchId     : Text      -- ^ Reference to the batch
+    instrument  : Text      -- ^ Token instrument used
+    numTransfers : Int      -- ^ Number of transfers in the batch
+    totalVolume : Decimal   -- ^ Total value transferred
+    timestamp   : Time      -- ^ When the batch completed
+  where
+    signatory operator
+
+    -- Consumed by SV automation when reward coupon is created
+    choice ConsumeMarker : ()
+      controller operator
+      do pure ()
