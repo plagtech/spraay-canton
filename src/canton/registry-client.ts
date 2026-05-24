@@ -27,6 +27,26 @@ export interface TransferFactoryInfo {
   choiceContextData: Record<string, unknown>;
 }
 
+// Arguments accepted by the TransferFactory_Transfer choice.
+// Required by Splice's POST /registry/transfer-instruction/v1/transfer-factory.
+export interface TransferFactoryArgs {
+  expectedAdmin: string;            // DSO party id
+  transfer: {
+    sender: string;                 // sender party id
+    receiver: string;               // receiver party id
+    amount: string;                 // decimal as string, e.g. "1.0"
+    instrumentId: { admin: string; id: string };
+    requestedAt: string;            // ISO timestamp
+    executeBefore: string;          // ISO timestamp
+    inputHoldingCids: string[];     // sender's holding contract ids
+    meta: { values: Record<string, string> };
+  };
+  extraArgs: {
+    context: { values: Record<string, string> };
+    meta: { values: Record<string, string> };
+  };
+}
+
 export interface ChoiceContextResponse {
   choiceContextData: Record<string, unknown>;
   disclosedContracts: DisclosedContract[];
@@ -72,13 +92,18 @@ export class RegistryClient {
    * token administrator (not visible to the sender), so explicit disclosure
    * is needed.
    */
-  async getTransferFactory(): Promise<TransferFactoryInfo> {
+  async getTransferFactory(args: TransferFactoryArgs): Promise<TransferFactoryInfo> {
     const url = `${this.scanUrl}/registry/transfer-instruction/v1/transfer-factory`;
     logger.debug(`Fetching TransferFactory from ${url}`);
 
     const res = await fetch(url, {
-      headers: this.authHeaders(),
-    });
+    method: "POST",
+    headers: {
+      ...this.authHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ choiceArguments: args }),
+  });
 
     if (!res.ok) {
       const text = await res.text();
@@ -89,20 +114,24 @@ export class RegistryClient {
 
     const data = (await res.json()) as {
       factoryId: string;
-      disclosedContracts?: any[];
-      choiceContextData?: Record<string, unknown>;
+      choiceContext?: {
+        choiceContextData?: Record<string, unknown>;
+        disclosedContracts?: any[];
+      };
     };
 
+    const choiceContext = data.choiceContext || {};
     return {
       factoryId: data.factoryId,
-      disclosedContracts: (data.disclosedContracts || []).map(
+      disclosedContracts: (choiceContext.disclosedContracts || []).map(
         (dc: any) => ({
           templateId: dc.templateId,
           contractId: dc.contractId,
           createdEventBlob: dc.createdEventBlob,
+          synchronizerId: dc.synchronizerId,
         })
       ),
-      choiceContextData: data.choiceContextData || {},
+      choiceContextData: choiceContext.choiceContextData || {},
     };
   }
 
@@ -203,7 +232,7 @@ export class RegistryClient {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.scanUrl}/api/scan/v1/readyz`, {
+      const res = await fetch(`${this.scanUrl}/api/scan/v0/dso`, {
         headers: this.authHeaders(),
       });
       return res.ok;

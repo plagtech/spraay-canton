@@ -17,6 +17,7 @@ export interface HoldingUtxo {
   owner: string;
   instrument: string;
   createdEventBlob?: string;
+  templateId: string;
 }
 
 export interface UtxoSelection {
@@ -47,6 +48,7 @@ export function parseHoldings(events: CreatedEvent[]): HoldingUtxo[] {
           owner: String(args.owner || ""),
           instrument: String(args.instrument || "unknown"),
           createdEventBlob: event.createdEventBlob,
+          templateId: event.templateId,
         };
       }
 
@@ -56,6 +58,7 @@ export function parseHoldings(events: CreatedEvent[]): HoldingUtxo[] {
         owner: String(view.owner || ""),
         instrument: String(view.instrument || "unknown"),
         createdEventBlob: event.createdEventBlob,
+        templateId: event.templateId,
       };
     })
     .filter((h) => h.amount > 0);

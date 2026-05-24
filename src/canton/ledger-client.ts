@@ -38,12 +38,14 @@ export interface SubmitRequest {
   actAs: string[];
   readAs: string[];
   disclosedContracts?: DisclosedContract[];
+  synchronizerId?: string;
 }
 
 export interface DisclosedContract {
   templateId: string;
   contractId: string;
   createdEventBlob: string;
+  synchronizerId?: string;
 }
 
 export interface SubmitResponse {
@@ -110,7 +112,7 @@ export class CantonLedgerClient {
   }
 
   async getLedgerEnd(): Promise<number> {
-    const res = await this.post("/v2/state/ledger-end", {});
+    const res = await this.get("/v2/state/ledger-end");
     return res.offset;
   }
 
@@ -138,7 +140,11 @@ export class CantonLedgerClient {
   /** Submit commands and wait for completion (synchronous) */
   async submitAndWait(request: SubmitRequest): Promise<SubmitResponse> {
     logger.debug(`Submitting command ${request.commandId} with ${request.commands.length} commands`);
-    const res = await this.post("/v2/commands/submit-and-wait", request);
+    const body = {
+      ...request,
+      synchronizerId: request.synchronizerId || config.canton.synchronizerId,
+  };
+  const res = await this.post("/v2/commands/submit-and-wait", body);
     logger.info(`Command ${request.commandId} committed at offset ${res.completionOffset}`);
     return res;
   }
@@ -282,7 +288,10 @@ export class CantonLedgerClient {
       commandId,
       actAs,
       readAs: actAs,
-      disclosedContracts,
+      disclosedContracts: (disclosedContracts || []).map((dc) => ({
+        ...dc,
+        synchronizerId: dc.synchronizerId || config.canton.synchronizerId,
+      })),
     });
   }
 

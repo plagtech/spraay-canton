@@ -10,14 +10,11 @@ export const config = {
     ledgerApiUrl: process.env.CANTON_LEDGER_API_URL || "http://localhost:7575",
     adminApiUrl: process.env.CANTON_ADMIN_API_URL || "http://localhost:5012",
     scanUrl: process.env.CANTON_SCAN_URL || "http://scan.localhost:4000",
-    // JWT for authenticated Ledger API access (production)
     jwtToken: process.env.CANTON_JWT_TOKEN || "",
-    // Spraay operator party ID (allocated on-chain)
     operatorPartyId: process.env.SPRAAY_OPERATOR_PARTY_ID || "",
-    // Instrument admin (DSO party for Canton Coin)
     instrumentAdmin: process.env.CANTON_INSTRUMENT_ADMIN || "",
-    // Ledger API user ID
     userId: process.env.CANTON_USER_ID || "spraay-operator",
+    synchronizerId: process.env.CANTON_SYNCHRONIZER_ID || "",
   },
 
   // Spraay Protocol settings

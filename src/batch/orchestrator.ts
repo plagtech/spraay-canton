@@ -71,7 +71,7 @@ export class BatchOrchestrator {
 
     try {
       // Step 1: Calculate totals
-      const totalAmount = input.recipients.reduce((sum, r) => sum + r.amount, 0);
+      const totalAmount = input.recipients.reduce((sum, r) => sum + Number(r.amount), 0);
       const fee = totalAmount * config.spraay.feeRate;
       const totalNeeded = totalAmount + fee;
 
@@ -99,8 +99,10 @@ export class BatchOrchestrator {
       }
 
       // Step 4: Create BatchPaymentRequest on-ledger
-      const requestResult = await this.createBatchRequest(batchId, input);
-      logger.info(`BatchPaymentRequest created at offset ${requestResult}`);
+      // SKIP on LocalNet — custom Spraay DAR not deployed
+      // const requestResult = await this.createBatchRequest(batchId, input);
+      // logger.info(`BatchPaymentRequest created at offset ${requestResult}`);
+      logger.info(`Batch ${batchId} — skipping on-ledger request (no custom DAR)`);
 
       // Step 5: Execute transfers via Token Standard TransferFactory
       const transferResults = await this.executeTransfers(
@@ -130,12 +132,15 @@ export class BatchOrchestrator {
       }
 
       // Step 6: Mark completion on-ledger
-      await this.markBatchCompleted(batchId, completed, failed, totalAmount, feeCollected ? fee : 0);
+      // SKIP on LocalNet — custom Spraay DAR not deployed
+      // await this.markBatchCompleted(batchId, completed, failed, totalAmount, feeCollected ? fee : 0);
+      logger.info(`Batch ${batchId} — skipping on-ledger completion marker`);
 
       // Step 7: Create activity marker for CC rewards
-      if (completed > 0) {
-        await this.createActivityMarker(batchId, input.instrument, completed, totalAmount);
-      }
+      // SKIP on LocalNet — requires Featured App registration
+      // if (completed > 0) {
+      //   await this.createActivityMarker(batchId, input.instrument, completed, totalAmount);
+      // }
 
       const status = failed === 0 ? "completed" : completed > 0 ? "partial" : "failed";
       logger.info(`Batch ${batchId} ${status}: ${completed}/${input.recipients.length} transfers`);
@@ -224,7 +229,25 @@ export class BatchOrchestrator {
     //     context data that Canton needs to validate the transfer.
     let factory: TransferFactoryInfo;
     try {
-      factory = await this.registry.getTransferFactory();
+      const probeRecipient = input.recipients[0];
+      const probeAdmin = config.canton.instrumentAdmin || this.operatorParty;
+      factory = await this.registry.getTransferFactory({
+        expectedAdmin: probeAdmin,
+        transfer: {
+          sender: input.senderPartyId,
+          receiver: probeRecipient.partyId,
+          amount: String(probeRecipient.amount),
+          instrumentId: { admin: probeAdmin, id: input.instrument },
+          requestedAt: new Date(Date.now() - 30000).toISOString(),
+          executeBefore: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          inputHoldingCids: [],
+          meta: { values: {} },
+        },
+        extraArgs: {
+          context: { values: {} },
+          meta: { values: {} },
+        },
+      });
       logger.info(`TransferFactory fetched: ${factory.factoryId.substring(0, 16)}...`);
     } catch (error: any) {
       logger.error(`Registry unreachable — cannot execute transfers: ${error.message}`);
@@ -243,7 +266,7 @@ export class BatchOrchestrator {
     const holdingDisclosed: DisclosedContract[] = selectedUtxos
       .filter((u) => u.createdEventBlob)
       .map((u) => ({
-        templateId: DAML_IDS.tokenStandard.holding,
+        templateId: u.templateId,
         contractId: u.contractId,
         createdEventBlob: u.createdEventBlob!,
       }));
@@ -255,7 +278,7 @@ export class BatchOrchestrator {
     for (let i = 0; i < input.recipients.length; i++) {
       const recipient = input.recipients[i];
       const commandId = `${batchId}-xfer-${i}-${Date.now()}`;
-      const now = new Date().toISOString();
+      const now = new Date(Date.now() - 30000).toISOString();
       const executeBefore = new Date(
         Date.now() + 24 * 60 * 60 * 1000
       ).toISOString();
@@ -291,9 +314,11 @@ export class BatchOrchestrator {
               },
             },
           },
-          context: factory.choiceContextData,
-          extraArgs: {},
-        };
+          extraArgs: {
+        context: factory.choiceContextData,
+        meta: { values: {} },
+      },
+    };
 
         // Merge disclosed contracts: registry factory + sender holdings
         const allDisclosed = [
@@ -335,7 +360,7 @@ export class BatchOrchestrator {
               .filter((h) => h.createdEventBlob)
               .forEach((h) =>
                 holdingDisclosed.push({
-                  templateId: DAML_IDS.tokenStandard.holding,
+                  templateId: h.templateId,
                   contractId: h.contractId,
                   createdEventBlob: h.createdEventBlob!,
                 })
@@ -469,25 +494,42 @@ export class BatchOrchestrator {
     const commandId = `${batchId}-fee-${Date.now()}`;
 
     try {
-      // Fetch factory (may be cached from batch execution, but safe to re-fetch)
-      const factory = await this.registry.getTransferFactory();
-
       // Get sender's current holdings (refreshed after batch transfers)
-      const holdingEvents = await this.ledger.getContractsByInterface(
-        senderPartyId,
-        DAML_IDS.tokenStandard.holding
-      );
+    const holdingEvents = await this.ledger.getContractsByInterface(
+      senderPartyId,
+      DAML_IDS.tokenStandard.holding
+    );
 
-      const holdingCids = holdingEvents.map((h) => h.contractId);
-      const holdingDisclosed = holdingEvents
-        .filter((h) => h.createdEventBlob)
-        .map((h) => ({
-          templateId: DAML_IDS.tokenStandard.holding,
-          contractId: h.contractId,
-          createdEventBlob: h.createdEventBlob!,
-        }));
+    const holdingCids = holdingEvents.map((h) => h.contractId);
+    const holdingDisclosed = holdingEvents
+      .filter((h) => h.createdEventBlob)
+      .map((h) => ({
+        templateId: h.templateId,
+        contractId: h.contractId,
+        createdEventBlob: h.createdEventBlob!,
+      }));
 
-      const now = new Date().toISOString();
+    // Fetch factory (may be cached from batch execution, but safe to re-fetch)
+    const feeAdmin = config.canton.instrumentAdmin || this.operatorParty;
+    const factory = await this.registry.getTransferFactory({
+      expectedAdmin: feeAdmin,
+      transfer: {
+        sender: senderPartyId,
+        receiver: this.operatorParty,
+        amount: String(feeAmount),
+        instrumentId: { admin: feeAdmin, id: instrument },
+        requestedAt: new Date(Date.now() - 30000).toISOString(),
+        executeBefore: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        inputHoldingCids: holdingCids,
+        meta: { values: {} },
+      },
+      extraArgs: {
+        context: { values: {} },
+        meta: { values: {} },
+      },
+    });
+
+      const now = new Date(Date.now() - 30000).toISOString();
 
       const choiceArgument = {
         expectedAdmin:
