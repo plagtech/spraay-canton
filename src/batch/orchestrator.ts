@@ -532,32 +532,34 @@ export class BatchOrchestrator {
       const now = new Date(Date.now() - 30000).toISOString();
 
       const choiceArgument = {
-        expectedAdmin:
-          config.canton.instrumentAdmin || this.operatorParty,
-        transfer: {
-          sender: senderPartyId,
-          receiver: this.operatorParty,  // ← fee goes to Spraay operator
-          amount: String(feeAmount),
-          instrumentId: {
-            admin: config.canton.instrumentAdmin || this.operatorParty,
-            id: instrument,
-          },
-          lock: null,
-          requestedAt: now,
-          executeBefore: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          inputHoldingCids: holdingCids,
-          meta: {
-            values: {
-              "splice.lfdecentralizedtrust.org/tx-kind": "transfer",
-              "splice.lfdecentralizedtrust.org/sender": senderPartyId,
-              "splice.lfdecentralizedtrust.org/reason":
-                `Spraay protocol fee (${config.spraay.feeRate * 100}%) for batch ${batchId}`,
-            },
-          },
-          context: factory.choiceContextData,
-          extraArgs: {},
+      expectedAdmin:
+        config.canton.instrumentAdmin || this.operatorParty,
+      transfer: {
+        sender: senderPartyId,
+        receiver: this.operatorParty,  // ← fee goes to Spraay operator
+        amount: String(feeAmount),
+        instrumentId: {
+          admin: config.canton.instrumentAdmin || this.operatorParty,
+          id: instrument,
         },
-      };
+        lock: null,
+        requestedAt: now,
+        executeBefore: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        inputHoldingCids: holdingCids,
+        meta: {
+          values: {
+            "splice.lfdecentralizedtrust.org/tx-kind": "transfer",
+            "splice.lfdecentralizedtrust.org/sender": senderPartyId,
+            "splice.lfdecentralizedtrust.org/reason":
+              `Spraay protocol fee (${config.spraay.feeRate * 100}%) for batch ${batchId}`,
+          },
+        },
+      },
+      extraArgs: {
+        context: factory.choiceContextData,
+        meta: { values: {} },
+      },
+    };
 
       const allDisclosed = [...factory.disclosedContracts, ...holdingDisclosed];
 
